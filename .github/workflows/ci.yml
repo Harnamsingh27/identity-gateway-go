@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: ["**"]
 
-env:
-  GOFLAGS: -mod=vendor
-
 jobs:
   lint:
     name: Lint
@@ -27,6 +24,8 @@ jobs:
 
       - name: Run golangci-lint
         run: golangci-lint run --timeout 5m ./...
+        env:
+          GOFLAGS: -mod=vendor
 
   test:
     name: Unit Tests
@@ -42,9 +41,13 @@ jobs:
 
       - name: go vet
         run: go vet ./...
+        env:
+          GOFLAGS: -mod=vendor
 
       - name: Test with race detector
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        env:
+          GOFLAGS: -mod=vendor
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
@@ -67,6 +70,8 @@ jobs:
 
       - name: Run integration tests
         run: go test -v ./test/integration/...
+        env:
+          GOFLAGS: -mod=vendor
 
   build:
     name: Build
@@ -83,12 +88,16 @@ jobs:
 
       - name: Build gateway binary
         run: go build -o bin/gateway ./cmd/gateway/...
+        env:
+          GOFLAGS: -mod=vendor
 
       - name: Build fake backends
         run: |
           go build ./services/fake-backend-a/...
           go build ./services/fake-backend-b/...
           go build ./services/fake-backend-c/...
+        env:
+          GOFLAGS: -mod=vendor
 
   smoke:
     name: Docker Compose Smoke Test
