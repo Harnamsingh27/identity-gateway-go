@@ -14,8 +14,8 @@ import (
 	"github.com/harnamsingh/go-servicekit/httpx"
 	"github.com/harnamsingh/go-servicekit/observability"
 
-	gatewayconfig "identity-gateway-go/internal/config"
 	"identity-gateway-go/internal/audit"
+	gatewayconfig "identity-gateway-go/internal/config"
 	"identity-gateway-go/internal/health"
 	"identity-gateway-go/internal/policy"
 	"identity-gateway-go/internal/proxy"
@@ -26,7 +26,7 @@ func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to gateway config YAML")
 	flag.Parse()
 
-	logger := observability.NewLogger(slog.LevelInfo)
+	logger := observability.NewLogger(observability.WithLogLevel(slog.LevelInfo))
 
 	// Load config.
 	cfg, err := gatewayconfig.Load(*cfgPath)
@@ -38,24 +38,29 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Set up OTel tracer and metrics.
-	shutdownTrace, err := observability.SetupTracer(ctx, observability.TraceOptions{
-		ServiceName:    cfg.OTel.ServiceName,
-		ServiceVersion: cfg.OTel.ServiceVersion,
-		OTLPEndpoint:   cfg.OTel.OTLPEndpoint,
-	})
+	// Set up OTel tracer. Fall back to no-op when no OTLP endpoint is configured.
+	tracerOpts := []observability.TracerOption{observability.WithNoopTracer()}
+	if cfg.OTel.OTLPEndpoint != "" {
+		tracerOpts = []observability.TracerOption{
+			observability.WithOTLPEndpoint(cfg.OTel.OTLPEndpoint),
+		}
+	}
+	shutdownTrace, err := observability.InitTracer(cfg.OTel.ServiceName, tracerOpts...)
 	if err != nil {
 		logger.Error("tracer setup failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 	defer func() { _ = shutdownTrace(context.Background()) }()
 
-	shutdownMetrics, err := observability.SetupMetrics(ctx, observability.MetricOptions{
-		OTLPEndpoint: cfg.OTel.OTLPEndpoint,
-	})
-	if err != nil {
-		logger.Error("metrics setup failed", slog.String("error", err.Error()))
-		os.Exit(1)
+	// Set up OTel metrics only when an OTLP endpoint is configured.
+	shutdownMetrics := func(context.Context) error { return nil }
+	if cfg.OTel.OTLPEndpoint != "" {
+		shutdownMetrics, err = observability.InitMetrics(cfg.OTel.ServiceName,
+			observability.WithOTLPMetricsEndpoint(cfg.OTel.OTLPEndpoint))
+		if err != nil {
+			logger.Error("metrics setup failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
 	}
 	defer func() { _ = shutdownMetrics(context.Background()) }()
 
@@ -79,8 +84,8 @@ func main() {
 	// Rate limiter.
 	rl := ratelimit.New(cfg.RateLimit.RequestsPerSecond, cfg.RateLimit.Burst)
 
-	// JWT config.
-	jwtCfg := auth.JWTConfig{Secret: []byte(cfg.JWT.Secret)}
+	// JWT verifier.
+	verifier := auth.NewHMACVerifier([]byte(cfg.JWT.Secret))
 
 	// Gateway handler.
 	gwHandler := proxy.NewGatewayHandler(httpProxy, pol, rl, auditLog, logger)
@@ -94,7 +99,7 @@ func main() {
 	mux.HandleFunc("/readyz", hh.Readiness)
 
 	// All other routes go through JWT auth → gateway handler.
-	protected := jwtCfg.HTTPMiddleware(gwHandler)
+	protected := auth.JWTMiddleware(verifier)(gwHandler)
 	mux.Handle("/", protected)
 
 	// Wire middleware: request ID → logging.
