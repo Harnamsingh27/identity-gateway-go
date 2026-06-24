@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/harnamsingh/go-servicekit/auth"
 	"github.com/harnamsingh/go-servicekit/httpx"
@@ -28,7 +29,6 @@ func main() {
 
 	logger := observability.NewLogger(observability.WithLogLevel(slog.LevelInfo))
 
-	// Load config.
 	cfg, err := gatewayconfig.Load(*cfgPath)
 	if err != nil {
 		logger.Error("failed to load config", slog.String("error", err.Error()))
@@ -38,7 +38,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Set up OTel tracer. Fall back to no-op when no OTLP endpoint is configured.
+	// Set up OTel tracer (no-op when no OTLP endpoint is configured).
 	tracerOpts := []observability.TracerOption{observability.WithNoopTracer()}
 	if cfg.OTel.OTLPEndpoint != "" {
 		tracerOpts = []observability.TracerOption{
@@ -64,58 +64,54 @@ func main() {
 	}
 	defer func() { _ = shutdownMetrics(context.Background()) }()
 
-	// Load policy.
 	pol, err := policy.Load(cfg.PolicyFile)
 	if err != nil {
-		logger.Error("failed to load policy", slog.String("file", cfg.PolicyFile), slog.String("error", err.Error()))
+		logger.Error("failed to load policy",
+			slog.String("file", cfg.PolicyFile), slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
-	// Build HTTP reverse proxy.
 	httpProxy, err := proxy.NewHTTPProxy(cfg.Backends, logger)
 	if err != nil {
 		logger.Error("proxy init failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
-	// Audit logger.
 	auditLog := audit.New(logger.With(slog.String("component", "audit")))
-
-	// Rate limiter.
 	rl := ratelimit.New(cfg.RateLimit.RequestsPerSecond, cfg.RateLimit.Burst)
-
-	// JWT verifier.
 	verifier := auth.NewHMACVerifier([]byte(cfg.JWT.Secret))
-
-	// Gateway handler.
 	gwHandler := proxy.NewGatewayHandler(httpProxy, pol, rl, auditLog, logger)
-
-	// Health handler.
 	hh := &health.Handler{}
 
-	// Build the mux.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", hh.Liveness)
 	mux.HandleFunc("/readyz", hh.Readiness)
+	mux.Handle("/", auth.JWTMiddleware(verifier)(gwHandler))
 
-	// All other routes go through JWT auth → gateway handler.
-	protected := auth.JWTMiddleware(verifier)(gwHandler)
-	mux.Handle("/", protected)
+	// Chain: request-ID → access-log → mux.
+	// observability.RequestIDMiddleware is outermost; AccessLogMiddleware sits inside it.
+	handler := observability.RequestIDMiddleware(httpx.AccessLogMiddleware(logger)(mux))
 
-	// Wire middleware: request ID → logging.
-	handler := httpx.Chain(mux,
-		httpx.RequestIDMiddleware,
-		httpx.LoggingMiddleware(logger),
-	)
-
-	// Mark ready now that all components are initialised.
 	hh.SetReady(true)
 
-	// Start HTTP server.
-	srv := httpx.NewServer(cfg.Addr, handler).WithShutdownTimeout(cfg.ShutdownTimeout)
-	logger.Info("gateway listening", slog.String("addr", cfg.Addr))
+	srv := &http.Server{
+		Addr:         cfg.Addr,
+		Handler:      handler,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 
-	if err := srv.ListenAndServe(ctx); err != nil {
+	// Graceful shutdown: wait for signal, then drain in-flight requests.
+	go func() {
+		<-ctx.Done()
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer shutCancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
+
+	logger.Info("gateway listening", slog.String("addr", cfg.Addr))
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server error", slog.String("error", err.Error()))
 		os.Exit(1)
 	}

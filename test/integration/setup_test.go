@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/harnamsingh/go-servicekit/auth"
-	"github.com/harnamsingh/go-servicekit/httpx"
+	"github.com/harnamsingh/go-servicekit/observability"
 	"identity-gateway-go/internal/audit"
 	"identity-gateway-go/internal/policy"
 	"identity-gateway-go/internal/proxy"
@@ -80,7 +80,7 @@ func setupGateway(t *testing.T, rps float64, burst int) *testGateway {
 
 	verifier := auth.NewHMACVerifier([]byte(testSecret))
 	// Chain: RequestID (outermost) → JWT auth → GatewayHandler
-	handler := httpx.Chain(gh, httpx.RequestIDMiddleware, auth.JWTMiddleware(verifier))
+	handler := observability.RequestIDMiddleware(auth.JWTMiddleware(verifier)(gh))
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
