@@ -1,0 +1,25 @@
+routes:
+  # Admin-only endpoint: only callers with role "admin" may use GET or POST.
+  - path: /admin
+    methods: [GET, POST]
+    roles: [admin]
+    backend: backend-a
+
+  # Profile endpoint: both "user" and "admin" may issue GET requests.
+  - path: /profile
+    methods: [GET]
+    roles: [user, admin]
+    backend: backend-b
+
+  # Per-user resource: the :id segment matches any value (e.g. /users/42).
+  # Only admins are allowed.
+  - path: /users/:id
+    methods: [GET, PUT, DELETE]
+    roles: [admin]
+    backend: backend-c
+
+  # Public assets: any authenticated caller (guest, user, or admin) may read.
+  - path: /public/*
+    methods: [GET]
+    roles: [user, admin, guest]
+    backend: backend-a

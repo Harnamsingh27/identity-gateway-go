@@ -1,0 +1,33 @@
+# Gateway listen address.
+addr: ":8080"
+
+# Path to the RBAC policy file.
+policy_file: "policy.example.yaml"
+
+# Backend targets: keys here must match the "backend" field in policy.example.yaml.
+backends:
+  backend-a: "http://fake-backend-a:8081"
+  backend-b: "http://fake-backend-b:8082"
+  backend-c: "http://fake-backend-c:8083"
+
+# JWT verification: change the secret before using in production.
+jwt:
+  secret: "change-me-in-production"
+
+# Token-bucket rate-limiting (per caller identity).
+rate_limit:
+  requests_per_second: 10
+  burst: 20
+
+# OpenTelemetry export (empty = no-op, no external collector required).
+otel:
+  service_name: "identity-gateway"
+  service_version: "v0.1.0"
+  otlp_endpoint: ""   # set to e.g. "otel-collector:4317" to enable
+
+# gRPC passthrough listener.
+grpc:
+  addr: ":9090"
+
+# Graceful shutdown timeout.
+shutdown_timeout: "10s"

@@ -1,0 +1,68 @@
+# Docker Compose stack for identity-gateway-go local development and smoke testing.
+#
+# Services:
+#   gateway        — the identity gateway (port 8080 HTTP, 9090 gRPC)
+#   fake-backend-a — echo backend for /admin and /public/* routes (port 8081)
+#   fake-backend-b — echo backend for /profile routes (port 8082)
+#   fake-backend-c — echo backend for /users/:id routes (port 8083)
+
+services:
+
+  # ── Identity Gateway ──────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: gateway
+    ports:
+      - "8080:8080"   # HTTP gateway
+      - "9090:9090"   # gRPC pass-through
+    environment:
+      GATEWAY_ADDR: ":8080"
+      GATEWAY_GRPC_ADDR: ":9090"
+      GATEWAY_POLICY_FILE: "/app/policy.example.yaml"
+      GATEWAY_JWT_SECRET: "integration-test-secret"
+      GATEWAY_RL_RPS: "100"
+      GATEWAY_RL_BURST: "200"
+    depends_on:
+      - fake-backend-a
+      - fake-backend-b
+      - fake-backend-c
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Fake Backend A (/admin, /public/*) ───────────────────────────────────────
+  fake-backend-a:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: fake-backend-a
+    ports:
+      - "8081:8081"
+    environment:
+      ADDR: ":8081"
+
+  # ── Fake Backend B (/profile) ────────────────────────────────────────────────
+  fake-backend-b:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: fake-backend-b
+    ports:
+      - "8082:8082"
+    environment:
+      ADDR: ":8082"
+
+  # ── Fake Backend C (/users/:id) ──────────────────────────────────────────────
+  fake-backend-c:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: fake-backend-c
+    ports:
+      - "8083:8083"
+    environment:
+      ADDR: ":8083"
